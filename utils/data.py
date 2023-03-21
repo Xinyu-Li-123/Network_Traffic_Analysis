@@ -34,10 +34,8 @@ def load_data(dataset, filename, verbose=True):
         df = df.rename(columns={'ts': 'time'})
     
     # process time field (divide by 1e6, minus the first time stamp)
-    if dataset == "caida":
+    if dataset == "caida" and filename == "raw.csv":
         df["time"] = (df["time"] - df["time"].min())
-    elif dataset == "ugr16":
-        df["time"] = (df["time"] - df["time"].min()) / 1e6
     else:
         df["time"] = (df["time"] - df["time"].min()) / 1e6
     df = df.sort_values(by="time")

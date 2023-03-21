@@ -1,5 +1,7 @@
 import numpy as np
 import pandas as pd
+from hurst import compute_Hc
+import scipy.signal
 
 
 def pkt_count(df, time_unit_exp, verbose=True):
@@ -65,7 +67,7 @@ def autocorr(data):
     :returns: Autocorrelation function, numpy array.
     """
     # compute the autocorrelation function using numpy.correlate()
-    autocorr = np.correlate(data, data, mode='full')
+    autocorr = scipy.signal.correlate(data, data, mode='full')
 
     # extract the positive lags of the autocorrelation function
     autocorr = autocorr[len(autocorr)//2:]
@@ -79,31 +81,27 @@ def autocorr(data):
     # print the autocorrelation function array
     return autocorr
 
-
-def corr(data1, data2):
+#TODO: How to normalize to [-1, 1]
+def cross_corr(data1, data2):
     """
-    Compute the correlation function of two time series.
+    Compute the cross-correlation function of two time series.
 
     :param data1: Time series 1, numpy array.
     :param data2: Time series 2, numpy array.
     :returns: Correlation function, numpy array.
     """
     # compute the correlation function using numpy.correlate()
-    corr = np.correlate(data1, data2, mode='full')
+    ccorr = scipy.signal.correlate(data1, data2, mode='full')
 
     # extract the positive lags of the correlation function
-    corr = corr[len(corr)//2:]
 
     # normalize the correlation function
-    corr = corr / corr[0]
-
-    # ignore lag=0
-    corr[0] = corr[1]
+    ccorr = ccorr / np.max(np.abs(ccorr))
 
     # print the correlation function array
-    return corr
+    return ccorr
 
-
+# TODO: how to caluculate hurst exponent?
 def hurst(data):
     """
     Compute the Hurst exponent of a time series.
@@ -111,32 +109,35 @@ def hurst(data):
     :param data: Time series, numpy array.
     :returns: Hurst exponent, float.
     """
+    # normalize the data
+    data = (data - data.mean()) / data.std()
 
-    # compute the Hurst exponent using the autocorrelation function
-    R = data.max() - data.min()
-    
-    lags = range(2,100)
+    # compute the Hurst exponent using the hurst package
+    h, _, _ = compute_Hc(data, kind='change', simplified=True)
 
-    variancetau = []; tau = []
 
-    for lag in lags: 
+    # lags = range(2,100)
 
-        #  Write the different lags into a vector to compute a set of tau or lags
-        tau.append(lag)
+    # variancetau = []; tau = []
 
-        # Compute the log returns on all days, then compute the variance on the difference in log returns
-        # call this pp or the price difference
-        pp = np.subtract(data[lag:], data[:-lag])
-        variancetau.append(np.var(pp))
+    # for lag in lags: 
 
-    # we now have a set of tau or lags and a corresponding set of variances.
-    #print tau
-    #print variancetau
+    #     #  Write the different lags into a vector to compute a set of tau or lags
+    #     tau.append(lag)
 
-    # plot the log of those variance against the log of tau and get the slope
-    m = np.polyfit(np.log10(tau),np.log10(variancetau),1)
+    #     # Compute the log returns on all days, then compute the variance on the difference in log returns
+    #     # call this pp or the price difference
+    #     pp = np.subtract(data[lag:], data[:-lag])
+    #     variancetau.append(np.var(pp))
 
-    h = m[0] / 2
+    # # we now have a set of tau or lags and a corresponding set of variances.
+    # #print tau
+    # #print variancetau
+
+    # # plot the log of those variance against the log of tau and get the slope
+    # m = np.polyfit(np.log10(tau),np.log10(variancetau),1)
+
+    # h = m[0] / 2
 
     # print the Hurst exponent
     return h
