@@ -1,10 +1,14 @@
 import numpy as np
 import pandas as pd
-from hurst import compute_Hc
+# from hurst import compute_Hc
 import scipy.signal
+from sklearn.utils.extmath import randomized_svd
+from scipy.sparse import lil_matrix, csr_matrix
 
 
-def pkt_count(df, time_unit_exp, verbose=True):
+five_tuple = ["srcip", "srcport", "dstip", "dstport", "proto"]
+
+def pkt_count(df, time_unit_exp, all_unit=False, verbose=True):
     """
     Convert a network trace into a time series of packet counts.
     The time series is aggregated by time unit, which is 10^time_unit_exp seconds.
@@ -12,51 +16,81 @@ def pkt_count(df, time_unit_exp, verbose=True):
 
     :param df: Pandas dataframe of the network traffic
     :param time_unit_exp: Exponent of the time unit, int.
+    :param all_unit: 
+        if set true, return pkt counts of all time units; 
+        otherwise, return pkt counts at least 1 and its correponding timestamps
+        e.g.
+        df = pd.DataFrame({"time": [0.010, 0.022, 0.035, 0.213]})
+        pkt_count(df, -1, all_unit=False)   # [0, 0.2], [3, 1]
+        pkt_count(df, -1, all_unit=False)   # [0, 0.1, 0.2], [3, 0, 1]
     :param verbose: Print the number of bars in the time series, bool.
     :returns:
       - unique: Time stamps of the time series, numpy array of float.
       - pkt_counts: Packet counts of the time series, numpy array of float.
     """
-    T = np.array(df["time"]) * (10**7)   # use int with modulo, avoid floating point modulo
-    T = T.astype(int)
+    T = np.array(df["time"]) * 1e7   # use int with modulo, avoid floating point modulo
+    # T = T.astype(int)
     time_unit = 10**(7 + time_unit_exp)  # [1e6, 1e5, 1e4, 1e3] (/1e6 => [1e-1, 1e-2, 1e-3, 1e-4])
     TS = T - T%time_unit  # TS is T aggregated by time unit
     unique, pkt_counts = np.unique(TS, return_counts=True)
 
     if verbose:
-      print("Time unit {:.1e} has {} bars".format(
-        time_unit/1e7, len(unique)))
+        print("Time unit {:.1e} has {} bars".format(
+            time_unit/1e7, len(unique)))
+    
+    if not all_unit:
+        return unique/1e7, pkt_counts.astype(float)
+    else:
+        unique = unique/1e7
+        total_duration = (T.max() - T.min()) / 1e7
+        ts = np.arange(0, total_duration+10**time_unit_exp, 10**time_unit_exp)
 
-    return unique/1e7, pkt_counts.astype(float)
+        all_pkt_counts = np.zeros(len(ts))
+        for i, t in enumerate(unique):
+            ai = int(t*(10**(-time_unit_exp)))
+            all_pkt_counts[ai] = pkt_counts[i]
+
+        return ts, all_pkt_counts
 
 
-def byte_count(df, time_unit_exp, verbose=True):
+def byte_count(df, time_unit_exp, all_unit=False, verbose=True):
     """
     Similar to pkt_count(), but compute the number of bytes instead of the number of packets.
     """
     T = np.array(df["time"]) * (10**7)   # use int with modulo, avoid floating point modulo
-    T = T.astype(int)
     time_unit = 10**(7 + time_unit_exp)  # [1e6, 1e5, 1e4, 1e3] (/1e6 => [1e-1, 1e-2, 1e-3, 1e-4])
     TS = T - T%time_unit  # TS is T aggregated by time unit
     unique, pkt_counts = np.unique(TS, return_counts=True)
 
     byte_counts = np.zeros_like(pkt_counts)
     if "pkt_len" in df.columns:
-      pkt_lens = df["pkt_len"].to_numpy()
+        pkt_lens = df["pkt_len"].to_numpy()
     else:
-      pkt_lens = df["pkt"].to_numpy()
+        pkt_lens = df["pkt"].to_numpy()
     pkt_start = 0
 
     # for loop to compute byte_counts
     for i, pkt_count in enumerate(pkt_counts):
-      byte_counts[i] = np.sum(pkt_lens[pkt_start:pkt_start+pkt_count])
-      pkt_start += pkt_count 
+        byte_counts[i] = np.sum(pkt_lens[pkt_start:pkt_start+pkt_count])
+        pkt_start += pkt_count 
 
     if verbose:
-      print("Time unit {:.1e} has {} bars".format(
-        time_unit/1e7, len(unique)))
+        print("Time unit {:.1e} has {} bars".format(
+            time_unit/1e7, len(unique)))
 
-    return unique/1e7, byte_counts
+    if not all_unit:
+        return unique/1e7, byte_counts
+    else:
+        unique = unique/1e7
+        total_duration = (T.max() - T.min()) / 1e7
+        ts = np.arange(0, total_duration+10**time_unit_exp, 10**time_unit_exp)
+        all_byte_counts = np.zeros(len(ts))
+        print(ts.shape) 
+        for i, t in enumerate(unique):
+            ai = int(t*(10**(-time_unit_exp)))
+            all_byte_counts[ai] = byte_counts[i]
+
+        return ts, all_byte_counts
 
 
 def autocorr(data):
@@ -141,3 +175,72 @@ def hurst(data):
 
     # print the Hurst exponent
     return h
+
+def flow_pca(dfg, gks, total_duration, time_unit_exp=-6, n_components=9, verbose=True):
+    """
+    Convert network traffic into a od_flow matrix (origin-destination flow) and use truncated SVD to reduce dimension
+
+    We treat all records with the same 5-tuple as a flow.
+
+    We construct a matrix X of shape (T, N) where T is #time intervals and N is #flows.
+
+    X[:, j] is the ith flow (a univariate time series, e.g. packet counts across time of a particular 5-tuple)
+    X[i, j] is a measurement in time series (e.g. packet count)
+
+    Performing a SVD on X (treat each column as a vector, compute the top `n_components` eigenvectors).
+
+    Using eigenvectors to represent X can only preserve limited amount of information. The percentage of information
+        preserved can be calculated by summing the variance of each eigenvector (each eigenvector accounts for a portion
+        of variance).
+    
+    Parameters
+    ----------
+
+    :param dfg: A pandas groupby object where each group is a flo.
+    :param total_duration: The total duration of the traffic in seconds.
+    :param time_unit_exp: The exponent of the time unit. For example, if time_unit_exp=-6, then the time unit is 1e-6 seconds.
+    :param n_components: The number of components to keep.
+
+    :returns:
+        od_flows: The od_flow matrix, shape (T, N)
+        trunc_od_flows: The truncated od_flow matrix, shape (T, n_components)
+        U: The left singular vectors, shape (T, n_components)
+        Sigma: The singular values, shape (n_components,)
+        VT: The right singular vectors, shape (n_components, N)
+
+    """
+
+    num_t = int(total_duration / 10**time_unit_exp)
+    num_flow = len(gks)
+
+    print("Time unit={:.2e} with {} time intervals and {} flows".format(
+        10**time_unit_exp, 
+        num_t, 
+        num_flow))
+
+    # od_flows = np.zeros((num_t, num_flow))
+    od_flows = lil_matrix((num_t, num_flow))
+    print(od_flows.shape)
+
+    bins = np.arange(0, total_duration, 10**time_unit_exp)  
+
+    for j in range(num_flow):
+        if (j+1)%1000==0 or j+1==num_flow:
+            print(f"\r{j+1}/{num_flow}", end="")
+        gk = gks.iloc[j]
+        g = dfg.get_group(tuple(gk))
+        od_flows[:, j] = np.histogram(g["time"], bins=bins)[0]
+    print()
+
+    U, Sigma, VT = randomized_svd(csr_matrix(od_flows), 
+                                n_components=n_components,
+                                n_iter=5,
+                                random_state=None)
+    od_flows = od_flows.toarray()
+    trunc_od_flows = U @ np.diag(Sigma) @ VT
+
+    # max_raw_flow_header_indices = np.argsort(list(dfg.size()))[::-1]
+    # err_rate = (np.linalg.norm(od_flows-trunc_od_flows, axis=0)/np.linalg.norm(od_flows, axis=0))[max_raw_flow_header_indices]
+    # print(err_rate.shape)
+
+    return od_flows, trunc_od_flows, U, Sigma, VT
