@@ -8,7 +8,7 @@ from scipy.sparse import lil_matrix, csr_matrix
 
 five_tuple = ["srcip", "srcport", "dstip", "dstport", "proto"]
 
-def pkt_count(df, time_unit_exp, all_unit=False, verbose=True):
+def pkt_count(df, time_unit_exp, total_duration, all_unit=False, verbose=True):
     """
     Convert a network trace into a time series of packet counts.
     The time series is aggregated by time unit, which is 10^time_unit_exp seconds.
@@ -42,10 +42,12 @@ def pkt_count(df, time_unit_exp, all_unit=False, verbose=True):
         return unique/1e7, pkt_counts.astype(float)
     else:
         unique = unique/1e7
-        total_duration = (T.max() - T.min()) / 1e7
         ts = np.arange(0, total_duration+10**time_unit_exp, 10**time_unit_exp)
-
         all_pkt_counts = np.zeros(len(ts))
+        print(unique.shape)
+        print(total_duration)
+        print(ts.shape)
+    
         for i, t in enumerate(unique):
             ai = int(t*(10**(-time_unit_exp)))
             all_pkt_counts[ai] = pkt_counts[i]
@@ -53,7 +55,7 @@ def pkt_count(df, time_unit_exp, all_unit=False, verbose=True):
         return ts, all_pkt_counts
 
 
-def byte_count(df, time_unit_exp, all_unit=False, verbose=True):
+def byte_count(df, time_unit_exp, total_duration, all_unit=False, verbose=True):
     """
     Similar to pkt_count(), but compute the number of bytes instead of the number of packets.
     """
@@ -82,7 +84,6 @@ def byte_count(df, time_unit_exp, all_unit=False, verbose=True):
         return unique/1e7, byte_counts
     else:
         unique = unique/1e7
-        total_duration = (T.max() - T.min()) / 1e7
         ts = np.arange(0, total_duration+10**time_unit_exp, 10**time_unit_exp)
         all_byte_counts = np.zeros(len(ts))
         print(ts.shape) 
@@ -209,6 +210,26 @@ def flow_pca(dfg, gks, total_duration, time_unit_exp=-6, n_components=9, verbose
         VT: The right singular vectors, shape (n_components, N)
 
     """
+    def pkt_count_flow_pca(df, time_unit_exp, verbose=True):
+        T = np.array(df["time"]) * (10**7)   # use int with modulo, avoid floating point modulo
+        T = T.astype(int)
+        time_unit = 10**(7 + time_unit_exp)  # [1e6, 1e5, 1e4, 1e3] (/1e6 => [1e-1, 1e-2, 1e-3, 1e-4])
+        TS = T - T%time_unit  # TS is T aggregated by time unit
+        unique, pkt_counts = np.unique(TS, return_counts=True)
+        # if rate_type == "byte":
+        #   byte_counts = np.zeros_like(pkt_counts)
+        #   pkt_lens = df["pkt_len"].to_numpy()
+        #   pkt_start = 0
+        #   # for loop to compute byte_counts
+        #   for i, pkt_count in enumerate(pkt_counts):
+        #     byte_counts[i] = np.sum(pkt_lens[pkt_start:pkt_start+pkt_count])
+        #     pkt_start += pkt_count 
+
+        if verbose:
+            print("Time unit {:.1e} has {} bars".format(
+                time_unit/1e7, len(unique)))
+
+        return TS, unique/1e7, pkt_counts
 
     num_t = int(total_duration / 10**time_unit_exp)
     num_flow = len(gks)
@@ -222,14 +243,21 @@ def flow_pca(dfg, gks, total_duration, time_unit_exp=-6, n_components=9, verbose
     od_flows = lil_matrix((num_t, num_flow))
     print(od_flows.shape)
 
-    bins = np.arange(0, total_duration, 10**time_unit_exp)  
+    # bins = np.arange(0, total_duration, 10**time_unit_exp)  
 
-    for j in range(num_flow):
-        if (j+1)%1000==0 or j+1==num_flow:
+    for j, (gk, g) in enumerate(dfg):
+        if j==0 or (j+1)%1000==0 or j+1==num_flow:
             print(f"\r{j+1}/{num_flow}", end="")
-        gk = gks.iloc[j]
-        g = dfg.get_group(tuple(gk))
-        od_flows[:, j] = np.histogram(g["time"], bins=bins)[0]
+        ts, unique, pkts = pkt_count_flow_pca(
+            g, time_unit_exp, total_duration, verbose=False)
+        i = 0;
+        prev_t = ts[0]
+        for t in ts:
+            if prev_t != t:
+                i += 1
+            print(t//(10**(7+time_unit_exp))-1, j)
+            od_flows[t//(10**(7+time_unit_exp))-1, j] = pkts[i]
+            prev_t = t
     print()
 
     U, Sigma, VT = randomized_svd(csr_matrix(od_flows), 
@@ -244,3 +272,5 @@ def flow_pca(dfg, gks, total_duration, time_unit_exp=-6, n_components=9, verbose
     # print(err_rate.shape)
 
     return od_flows, trunc_od_flows, U, Sigma, VT
+
+

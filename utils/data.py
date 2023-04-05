@@ -1,6 +1,13 @@
 import pandas as pd 
 import json 
 import os
+from tqdm import tqdm
+from scapy.all import IP, ICMP, TCP, UDP
+from scapy.all import wrpcap
+from scipy.stats import rankdata
+import ipaddress
+import socket
+import struct
 
 def load_data(dataset, filename, verbose=True):
     """
@@ -48,4 +55,65 @@ def load_data(dataset, filename, verbose=True):
     
     return df
 
+def IP_str2int(IP_str):
+    return int(ipaddress.ip_address(IP_str))
 
+def csv2pcap(input, output):
+    """
+    Convert a csv file to a pcap file
+
+    :param input: Pandas dataframe of the csv file
+    :param output: Path to the output pcap file
+    """
+
+    df = input.sort_values(["time"])
+
+    packets = []
+
+    for i, row in tqdm(df.iterrows(), total=df.shape[0]):
+        time = float(row["time"] / 10**6)
+        if isinstance(row["srcip"], str):
+            srcip = IP_str2int(row["srcip"])
+            dstip = IP_str2int(row["dstip"])
+            src = socket.inet_ntoa(struct.pack('!L', srcip))
+            dst = socket.inet_ntoa(struct.pack('!L', dstip))
+        else:
+            src = socket.inet_ntoa(struct.pack('!L', row["srcip"]))
+            dst = socket.inet_ntoa(struct.pack('!L', row["dstip"]))
+
+        srcport = row["srcport"]
+        dstport = row["dstport"]
+        proto = row["proto"]
+        pkt_len = int(row["pkt_len"])
+
+        try:
+            proto = int(proto)
+        except BaseException:
+            if proto == "TCP":
+                proto = 6
+            elif proto == "UDP":
+                proto = 17
+            elif proto == "ICMP":
+                proto = 1
+            else:
+                proto = 0
+
+        ip = IP(src=src, dst=dst, len=pkt_len, proto=proto)
+        if proto == 1:
+            p = ip / ICMP()
+        elif proto == 6:
+            tcp = TCP(sport=srcport, dport=dstport)
+            p = ip / tcp
+        elif proto == 17:
+            udp = UDP(sport=srcport, dport=dstport)
+            p = ip / udp
+        else:
+            p = ip
+
+        p.time = time
+        p.len = pkt_len
+        p.wirelen = pkt_len + 4
+
+        packets.append(p)
+
+    wrpcap(output, packets)

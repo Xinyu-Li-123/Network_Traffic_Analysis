@@ -4,18 +4,19 @@ import utils.data as data
 import utils.stats as stats 
 import matplotlib.pyplot as plt
 
-def tmp(dataset, filename):
-    df = data.load_data(dataset, filename, verbose=False)
-    print(df)
+# Load the data
+dataset = "caida"
+filename = "raw.csv"
+df = data.load_data(dataset, filename, verbose=False)
 
-    # compute the packet counts
-    timestamps, pkt_counts = stats.byte_count(
-        df, time_unit_exp=-2, all_unit=True, verbose=True)
+# find max flow
+dfg = df.groupby(stats.five_tuple)
+flowsizes = dfg.size()
+max_flow = flowsizes.idxmax()
+print(f"Max flow: {max_flow}, size: {flowsizes[max_flow]}")
+df_max_flow = dfg.get_group(max_flow)
+print(df_max_flow)
 
-    print(timestamps[:10])
-    print(pkt_counts[:10])
-
-
-    return 
-
-tmp("ugr16", "raw.csv")
+# save as pcap
+output = "data/caida_maxflow/raw.pcap"
+data.csv2pcap(df_max_flow, output)
