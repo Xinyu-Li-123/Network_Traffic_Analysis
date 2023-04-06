@@ -138,6 +138,19 @@ def cross_corr(data1, data2):
     # print the correlation function array
     return ccorr
 
+def pearson_corr(flows):
+    """
+    Compute the Pearson correlation coefficient of a set of flows.
+    
+    :param flows: Flows, list of numpy arrays, shape = (num_t, num_flows)
+    :return pcorr: Pearson correlation coefficient, numpy array, shape = (num_flows, num_flows)
+            pcorr[i, j] = Pearson correlation coefficient between flow i and flow j
+    
+    """
+    return np.corrcoef(flows, rowvar=False)
+
+
+
 # TODO: how to caluculate hurst exponent?
 def hurst(data):
     """
@@ -180,7 +193,7 @@ def hurst(data):
     # print the Hurst exponent
     return h
 
-def flow_pca(dfg, gks, total_duration, time_unit_exp=-6, n_components=9, verbose=True):
+def flow_pca(dfg, gks, total_duration, time_unit_exp=-6, n_components=9, rate_type="packet", verbose=True):
     """
     Convert network traffic into a od_flow matrix (origin-destination flow) and use truncated SVD to reduce dimension
 
@@ -214,20 +227,20 @@ def flow_pca(dfg, gks, total_duration, time_unit_exp=-6, n_components=9, verbose
         VT: The right singular vectors, shape (n_components, N)
 
     """
-    def pkt_count_flow_pca(df, time_unit_exp):
+    def pkt_count_flow_pca(df, time_unit_exp, rate_type):
         T = np.array(df["time"]) * (10**7)   # use int with modulo, avoid floating point modulo
         T = T.astype(int)
         time_unit = 10**(7 + time_unit_exp)  # [1e6, 1e5, 1e4, 1e3] (/1e6 => [1e-1, 1e-2, 1e-3, 1e-4])
         TS = T - T%time_unit  # TS is T aggregated by time unit
         unique, pkt_counts = np.unique(TS, return_counts=True)
-        # if rate_type == "byte":
-        #   byte_counts = np.zeros_like(pkt_counts)
-        #   pkt_lens = df["pkt_len"].to_numpy()
-        #   pkt_start = 0
-        #   # for loop to compute byte_counts
-        #   for i, pkt_count in enumerate(pkt_counts):
-        #     byte_counts[i] = np.sum(pkt_lens[pkt_start:pkt_start+pkt_count])
-        #     pkt_start += pkt_count 
+        if rate_type == "byte":
+            byte_counts = np.zeros_like(pkt_counts)
+            pkt_lens = df["pkt_len"].to_numpy()
+            pkt_start = 0
+            # for loop to compute byte_counts
+            for i, pkt_count in enumerate(pkt_counts):
+                byte_counts[i] = np.sum(pkt_lens[pkt_start:pkt_start+pkt_count])
+                pkt_start += pkt_count 
 
         return TS, unique/1e7, pkt_counts
 
@@ -245,12 +258,14 @@ def flow_pca(dfg, gks, total_duration, time_unit_exp=-6, n_components=9, verbose
 
     # bins = np.arange(0, total_duration, 10**time_unit_exp)  
 
-    for j, (gk, g) in enumerate(dfg):
+    # for j, (gk, g) in enumerate(dfg):
+    for j, gk in enumerate(gks):
+        g = dfg.get_group(gk)
         if j==0 or (j+1)%1000==0 or j+1==num_flow:
             print(f"\r{j+1}/{num_flow}", end="")
         ts, unique, pkts = pkt_count_flow_pca(
-            g, time_unit_exp)
-        i = 0;
+            g, time_unit_exp, rate_type)
+        i = 0
         prev_t = ts[0]
         for t in ts:
             if prev_t != t:
