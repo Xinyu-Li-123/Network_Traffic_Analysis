@@ -41,7 +41,7 @@ def load_data(dataset, filename, verbose=True):
         df = df.rename(columns={'ts': 'time'})
     
     # process time field (divide by 1e6, minus the first time stamp)
-    if dataset == "caida" and filename == "raw.csv":
+    if dataset in ["caida", "dc"] and filename == "raw.csv":
         df["time"] = (df["time"] - df["time"].min())
     else:
         df["time"] = (df["time"] - df["time"].min()) / 1e6

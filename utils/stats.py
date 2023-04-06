@@ -3,10 +3,12 @@ import pandas as pd
 # from hurst import compute_Hc
 import scipy.signal
 from sklearn.utils.extmath import randomized_svd
-from scipy.sparse import lil_matrix, csr_matrix
+from sklearn.utils.sparsefuncs import mean_variance_axis
+from scipy.sparse import lil_matrix, csr_matrix, issparse
 
 
 five_tuple = ["srcip", "srcport", "dstip", "dstport", "proto"]
+
 
 def pkt_count(df, time_unit_exp, total_duration, all_unit=False, verbose=True):
     """
@@ -144,6 +146,7 @@ def hurst(data):
     :param data: Time series, numpy array.
     :returns: Hurst exponent, float.
     """
+    raise NotImplemented("Hurst exponent is not properly implemented yet.")
     # normalize the data
     data = (data - data.mean()) / data.std()
 
@@ -197,7 +200,8 @@ def flow_pca(dfg, gks, total_duration, time_unit_exp=-6, n_components=9, verbose
     Parameters
     ----------
 
-    :param dfg: A pandas groupby object where each group is a flo.
+    :param dfg: A pandas groupby object where each group is a flow.
+    :param gks: The group keys of needed groups (e.g. group keys of flows with size <= 3).
     :param total_duration: The total duration of the traffic in seconds.
     :param time_unit_exp: The exponent of the time unit. For example, if time_unit_exp=-6, then the time unit is 1e-6 seconds.
     :param n_components: The number of components to keep.
@@ -210,7 +214,7 @@ def flow_pca(dfg, gks, total_duration, time_unit_exp=-6, n_components=9, verbose
         VT: The right singular vectors, shape (n_components, N)
 
     """
-    def pkt_count_flow_pca(df, time_unit_exp, verbose=True):
+    def pkt_count_flow_pca(df, time_unit_exp):
         T = np.array(df["time"]) * (10**7)   # use int with modulo, avoid floating point modulo
         T = T.astype(int)
         time_unit = 10**(7 + time_unit_exp)  # [1e6, 1e5, 1e4, 1e3] (/1e6 => [1e-1, 1e-2, 1e-3, 1e-4])
@@ -224,10 +228,6 @@ def flow_pca(dfg, gks, total_duration, time_unit_exp=-6, n_components=9, verbose
         #   for i, pkt_count in enumerate(pkt_counts):
         #     byte_counts[i] = np.sum(pkt_lens[pkt_start:pkt_start+pkt_count])
         #     pkt_start += pkt_count 
-
-        if verbose:
-            print("Time unit {:.1e} has {} bars".format(
-                time_unit/1e7, len(unique)))
 
         return TS, unique/1e7, pkt_counts
 
@@ -249,13 +249,12 @@ def flow_pca(dfg, gks, total_duration, time_unit_exp=-6, n_components=9, verbose
         if j==0 or (j+1)%1000==0 or j+1==num_flow:
             print(f"\r{j+1}/{num_flow}", end="")
         ts, unique, pkts = pkt_count_flow_pca(
-            g, time_unit_exp, total_duration, verbose=False)
+            g, time_unit_exp)
         i = 0;
         prev_t = ts[0]
         for t in ts:
             if prev_t != t:
                 i += 1
-            print(t//(10**(7+time_unit_exp))-1, j)
             od_flows[t//(10**(7+time_unit_exp))-1, j] = pkts[i]
             prev_t = t
     print()
@@ -267,10 +266,15 @@ def flow_pca(dfg, gks, total_duration, time_unit_exp=-6, n_components=9, verbose
     od_flows = od_flows.toarray()
     trunc_od_flows = U @ np.diag(Sigma) @ VT
 
-    # max_raw_flow_header_indices = np.argsort(list(dfg.size()))[::-1]
-    # err_rate = (np.linalg.norm(od_flows-trunc_od_flows, axis=0)/np.linalg.norm(od_flows, axis=0))[max_raw_flow_header_indices]
-    # print(err_rate.shape)
+    # compute explained variance
+    explained_variance_ = exp_var = np.var(trunc_od_flows, axis=0)
+    if issparse(trunc_od_flows):
+        _, full_var = mean_variance_axis(od_flows, axis=0)
+        full_var = full_var.sum()
+    else:
+        full_var = np.var(od_flows, axis=0).sum()
+    explained_variance_ratio_ = exp_var / full_var
 
-    return od_flows, trunc_od_flows, U, Sigma, VT
+    return od_flows, trunc_od_flows, U, Sigma, VT, explained_variance_, explained_variance_ratio_
 
 
