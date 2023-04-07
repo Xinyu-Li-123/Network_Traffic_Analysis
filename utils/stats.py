@@ -193,7 +193,7 @@ def hurst(data):
     # print the Hurst exponent
     return h
 
-def flow_pca(dfg, gks, total_duration, time_unit_exp=-6, n_components=9, rate_type="packet", verbose=True):
+def flow_pca(dfg, gks, total_duration, time_unit_exp=-1, n_components=9, rate_type="packet", verbose=True):
     """
     Convert network traffic into a od_flow matrix (origin-destination flow) and use truncated SVD to reduce dimension
 
@@ -227,7 +227,30 @@ def flow_pca(dfg, gks, total_duration, time_unit_exp=-6, n_components=9, rate_ty
         VT: The right singular vectors, shape (n_components, N)
 
     """
-    def pkt_count_flow_pca(df, time_unit_exp, rate_type):
+
+    od_flows = compute_od_flows(dfg, gks, total_duration, time_unit_exp, rate_type, )
+
+    U, Sigma, VT = randomized_svd(csr_matrix(od_flows), 
+                                n_components=n_components,
+                                n_iter=5,
+                                random_state=None)
+    od_flows = od_flows.toarray()
+    trunc_od_flows = U @ np.diag(Sigma) @ VT
+
+    # compute explained variance
+    explained_variance_ = exp_var = np.var(trunc_od_flows, axis=0)
+    if issparse(trunc_od_flows):
+        _, full_var = mean_variance_axis(od_flows, axis=0)
+        full_var = full_var.sum()
+    else:
+        full_var = np.var(od_flows, axis=0).sum()
+    explained_variance_ratio_ = exp_var / full_var
+
+    return od_flows, trunc_od_flows, U, Sigma, VT, explained_variance_, explained_variance_ratio_
+
+
+def compute_od_flows(dfg, gks, total_duration, time_unit_exp=-1, rate_type="packet", verbose=True):
+    def pkt_count_flow_pca(df, time_unit_exp):
         T = np.array(df["time"]) * (10**7)   # use int with modulo, avoid floating point modulo
         T = T.astype(int)
         time_unit = 10**(7 + time_unit_exp)  # [1e6, 1e5, 1e4, 1e3] (/1e6 => [1e-1, 1e-2, 1e-3, 1e-4])
@@ -258,14 +281,13 @@ def flow_pca(dfg, gks, total_duration, time_unit_exp=-6, n_components=9, rate_ty
 
     # bins = np.arange(0, total_duration, 10**time_unit_exp)  
 
-    # for j, (gk, g) in enumerate(dfg):
     for j, gk in enumerate(gks):
         g = dfg.get_group(gk)
         if j==0 or (j+1)%1000==0 or j+1==num_flow:
             print(f"\r{j+1}/{num_flow}", end="")
         ts, unique, pkts = pkt_count_flow_pca(
-            g, time_unit_exp, rate_type)
-        i = 0
+            g, time_unit_exp)
+        i = 0;
         prev_t = ts[0]
         for t in ts:
             if prev_t != t:
@@ -274,22 +296,7 @@ def flow_pca(dfg, gks, total_duration, time_unit_exp=-6, n_components=9, rate_ty
             prev_t = t
     print()
 
-    U, Sigma, VT = randomized_svd(csr_matrix(od_flows), 
-                                n_components=n_components,
-                                n_iter=5,
-                                random_state=None)
-    od_flows = od_flows.toarray()
-    trunc_od_flows = U @ np.diag(Sigma) @ VT
+    return od_flows
 
-    # compute explained variance
-    explained_variance_ = exp_var = np.var(trunc_od_flows, axis=0)
-    if issparse(trunc_od_flows):
-        _, full_var = mean_variance_axis(od_flows, axis=0)
-        full_var = full_var.sum()
-    else:
-        full_var = np.var(od_flows, axis=0).sum()
-    explained_variance_ratio_ = exp_var / full_var
-
-    return od_flows, trunc_od_flows, U, Sigma, VT, explained_variance_, explained_variance_ratio_
 
 
